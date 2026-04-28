@@ -76,7 +76,7 @@ async def sync_branch(
             "gh_repo": src_repo_name,
             "gh_check": repo_config.check_name,
         }
-        await gl.set_webhook(dest_fullname, webhook_data)
+        await gl.set_webhook(dest_fullname, repo_config.status_type, webhook_data)
 
     # sync commits from GitHub -> GitLab
     gl_token = await gl.auth.authenticate_user(gl_user)

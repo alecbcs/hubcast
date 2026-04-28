@@ -21,9 +21,9 @@ class RepoConfig:
     sync_drafts: bool = True
     sync_drafts_msg: bool = True
 
-    # TODO: allow users to control the granularity of checks reported to GitHub
+    # Allow users to control the granularity of checks reported to GitHub
     # via setting either "pipeline" or "job"
-    check_type: str = "pipeline"
+    status_type: str = "pipeline"
 
     # TODO: create GitLab MRs that mirror GitHub PRs to allow users to test
     # synthetic merge commits between the branch and the default branch
