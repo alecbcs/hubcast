@@ -13,6 +13,7 @@ from hubcast.clients.gitlab.client import GitLabClient
 from hubcast.exceptions import HubcastError, RepoConfigError, WebhookPermissionError
 from hubcast.logging import update_log_context
 from hubcast.web.github.messages import (
+    CONFIG_DOCS_URL,
     DEACTIVATED_ACCOUNT_MARKER,
     DEACTIVATED_ACCOUNT_MSG,
     HOOK_DECLINED_MSG,
@@ -26,7 +27,7 @@ from hubcast.web.github.messages import (
     PERMISSION_DENIED_SYNC_LOG_MSG,
     PERMISSION_DENIED_TITLE,
     PIPELINE_FAILED_MSG,
-    WEBHOOK_PERMISSION_DENIED_SUMMARY,
+    WEBHOOK_PERMISSION_DENIED_DOCS_URL,
     WEBHOOK_PERMISSION_DENIED_TITLE,
     help_message,
 )
@@ -55,22 +56,25 @@ class GitHubRouter(routing.Router):
 router = GitHubRouter()
 
 
-# check name used to report errors about repo config or webhooks
+# status context used to report errors about repo config or webhooks
 # this avoids overwriting errors if a normal pipeline succeeds, and provides
 # a default for situations where there is no default check name set
-# this check won't linger because resolving issues requires a new commit to be pushed
+# this status won't linger because resolving issues requires a new commit to be pushed
+# these errors are reported as commit statuses instead of check runs because
+# they cannot be resolved by re-running, and GitHub always shows a "Re-run"
+# button next to check runs (but not commit statuses)
 ERROR_CHECK_NAME = "hubcast-error"
 
 
 async def report_config_error(gh: GitHubClient, sha: str, exc: RepoConfigError) -> None:
-    """Report a missing/invalid repo config to the user as a failed check."""
+    """Report a missing/invalid repo config to the user as a failed commit status."""
     exc.log(log)
-    await gh.set_check_status(
+    await gh.set_commit_status(
         sha,
         ERROR_CHECK_NAME,
         "failure",
-        title=exc.title,
-        summary=exc.summary,
+        description=exc.title,
+        target_url=CONFIG_DOCS_URL,
     )
 
 
@@ -106,7 +110,7 @@ async def sync_branch(
     is_default_branch = sync_ref == f"refs/heads/{default_branch}"
     config_changed = gh.repo_config_path in changed_files_from_push(event.data)
     try:
-        repo_config, fetched = await get_repo_config(
+        repo_config = await get_repo_config(
             gh, src_fullname, refresh=is_default_branch and config_changed
         )
     except RepoConfigError as exc:
@@ -118,11 +122,11 @@ async def sync_branch(
     head_commit = event.data.get("head_commit")
     commit_msg = head_commit["message"] if head_commit else ""
 
-    # only set/update webhook on default branch pushes when config cache was bypassed (refresh or initial fetch)
+    # only set/update webhook on default branch pushes
     # and if the config file itself was changed (config_changed above)
-    # we want to give maintainers the option to force-set the webhook; an empty commit won't result in a cache miss
-    # if the commit message contains [hubcast config], we'll set the webhook
-    if is_default_branch and (fetched or "[hubcast config]" in commit_msg):
+    # we want to give maintainers the option to force-set the webhook: if the
+    # commit message contains [hubcast config], we'll set the webhook
+    if is_default_branch and (config_changed or "[hubcast config]" in commit_msg):
         # setup callback webhook on GitLab
         try:
             await gl.set_webhook(
@@ -136,23 +140,22 @@ async def sync_branch(
         except WebhookPermissionError as exc:
             # the user is not a maintainer and we need to tell them to push config changes with higher permissions
             exc.log(log)
-            await gh.set_check_status(
+            await gh.set_commit_status(
                 want_sha,
                 ERROR_CHECK_NAME,
                 "failure",
-                title=WEBHOOK_PERMISSION_DENIED_TITLE,
-                summary=WEBHOOK_PERMISSION_DENIED_SUMMARY,
+                description=WEBHOOK_PERMISSION_DENIED_TITLE,
+                target_url=WEBHOOK_PERMISSION_DENIED_DOCS_URL,
             )
             return
         except HubcastError as exc:
             # log for the hubcast admin and tell the user it's not their fault
             exc.log(log)
-            await gh.set_check_status(
+            await gh.set_commit_status(
                 want_sha,
                 ERROR_CHECK_NAME,
                 "failure",
-                title=INTERNAL_ERROR_TITLE,
-                summary=INTERNAL_ERROR_SUMMARY,
+                description=INTERNAL_ERROR_TITLE,
             )
             return
         else:
@@ -252,7 +255,7 @@ async def remove_branch(
     src_fullname = event.data["repository"]["full_name"]
     sync_ref = event.data["ref"]
 
-    repo_config, _ = await get_repo_config(gh, src_fullname)
+    repo_config = await get_repo_config(gh, src_fullname)
 
     dest_fullname = repo_config.dest_fullname
     dest_remote_url = f"{gl.instance_url}/{dest_fullname}.git"
@@ -353,7 +356,7 @@ async def sync_pr(
 
     # get the repository configuration from .github/hubcast.yml
     try:
-        repo_config, _ = await get_repo_config(gh, base_fullname)
+        repo_config = await get_repo_config(gh, base_fullname)
     except RepoConfigError as exc:
         await report_config_error(gh, want_sha, exc)
         return
@@ -523,7 +526,7 @@ async def remove_pr(
     base_fullname = pull_request["base"]["repo"]["full_name"]
 
     # get the repository configuration from .github/hubcast.yml
-    repo_config, _ = await get_repo_config(gh, base_fullname)
+    repo_config = await get_repo_config(gh, base_fullname)
 
     if not repo_config.delete_closed:
         log.info("Skipped PR branch removal - delete_closed disabled")
@@ -693,7 +696,7 @@ async def respond_comment(
         update_log_context(branch=branch)
 
         # get the gitlab repo information and run the pipeline
-        repo_config, _ = await get_repo_config(gh, base_fullname)
+        repo_config = await get_repo_config(gh, base_fullname)
         dest_fullname = repo_config.dest_fullname
 
         try:
@@ -742,7 +745,7 @@ async def respond_comment(
         update_log_context(branch=branch)
 
         # get the gitlab repo information and run the pipeline
-        repo_config, _ = await get_repo_config(gh, base_fullname)
+        repo_config = await get_repo_config(gh, base_fullname)
         dest_fullname = repo_config.dest_fullname
 
         try:
@@ -851,7 +854,7 @@ async def rerun_check(
         return
 
     try:
-        repo_config, _ = await get_repo_config(gh, src_fullname)
+        repo_config = await get_repo_config(gh, src_fullname)
     except RepoConfigError as exc:
         await report_config_error(gh, check_run_commit, exc)
         return

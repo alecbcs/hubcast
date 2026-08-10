@@ -50,6 +50,54 @@ class GitHubClient:
         # path to the hubcast config file within a repository, relative to its root
         self.repo_config_path = ".github/hubcast.yml"
 
+    async def set_commit_status(
+        self,
+        ref: str,
+        context: str,
+        state: str,
+        description: str,
+        target_url: str | None = None,
+    ) -> None:
+        """
+        Set a commit status on a GitHub commit using the statuses API.
+
+        Unlike check runs (see set_check_status), commit statuses do not show
+        a "Re-run" button in the GitHub UI. Use this for reporting errors that
+        cannot be resolved by re-running (e.g. config or permission errors).
+
+        Attributes:
+        ----------
+        ref: str
+            The git SHA reference for the status.
+        context: str
+            The name of the status shown in the list of checks.
+        state: str
+            One of "error", "failure", "pending", or "success".
+        description: str
+            A short description shown inline with the status.
+            GitHub limits this field to 140 characters; longer values are truncated.
+        target_url: str, optional
+            A URL linked from the status to point users to more information.
+
+        """
+        payload: dict[str, Any] = {
+            "state": state,
+            "context": context,
+            # github rejects descriptions longer than 140 characters
+            "description": description[:140],
+        }
+        if target_url is not None:
+            payload["target_url"] = target_url
+
+        gh_token = await self.auth.authenticate_installation(
+            self.repo_owner, self.repo_name
+        )
+
+        async with aiohttp.ClientSession() as session:
+            gh = gh_aiohttp.GitHubAPI(session, self.requester, oauth_token=gh_token)
+            url = f"/repos/{self.repo_owner}/{self.repo_name}/statuses/{ref}"
+            await gh.post(url, data=payload)
+
     async def set_check_status(
         self,
         ref: str,

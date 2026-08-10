@@ -28,11 +28,12 @@ PIPELINE_FAILED_MSG = "GitLab could not start the pipeline. Investigate the issu
 WEBHOOK_PERMISSION_DENIED_TITLE = (
     "Hubcast couldn't update its configuration due to insufficient permissions."
 )
-WEBHOOK_PERMISSION_DENIED_SUMMARY = 'Hubcast was unable to propagate changes to its configuration due to insufficient permissions on the destination repository. Users who push changes to Hubcast configuration files must have at least the "maintainer" role on the destination repository.\nTo correct this, a user with the maintainer role can push a commit with `[hubcast config]` in the message or a commit with additional changes to the Hubcast configuration file.'
-
-CONFIG_DOCS_URL = (
-    "https://github.com/llnl/hubcast/blob/main/docs/guide-user.md#configuration"
+USER_GUIDE_URL = "https://github.com/llnl/hubcast/blob/main/docs/guide-user.md"
+WEBHOOK_PERMISSION_DENIED_DOCS_URL = (
+    f"{USER_GUIDE_URL}#changes-to-hubcast-configuration"
 )
+
+CONFIG_DOCS_URL = f"{USER_GUIDE_URL}#configuration"
 
 INTERNAL_ERROR_TITLE = "Hubcast internal error"
 INTERNAL_ERROR_SUMMARY = (

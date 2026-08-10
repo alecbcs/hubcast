@@ -13,6 +13,7 @@ from repligit.exceptions import RefUpdateRejected
 
 from hubcast.exceptions import HubcastError, RepoConfigError, WebhookPermissionError
 from hubcast.web.github.messages import (
+    CONFIG_DOCS_URL,
     DEACTIVATED_ACCOUNT_MARKER,
     DEACTIVATED_ACCOUNT_MSG,
     HOOK_DECLINED_MSG,
@@ -25,7 +26,7 @@ from hubcast.web.github.messages import (
     PERMISSION_DENIED_SYNC_LOG_MSG,
     PERMISSION_DENIED_TITLE,
     PIPELINE_FAILED_MSG,
-    WEBHOOK_PERMISSION_DENIED_SUMMARY,
+    WEBHOOK_PERMISSION_DENIED_DOCS_URL,
     WEBHOOK_PERMISSION_DENIED_TITLE,
 )
 from hubcast.web.github.routes import (
@@ -203,6 +204,7 @@ def mock_gh():
     gh.get_prs = AsyncMock(return_value=[])
     gh.get_branch = AsyncMock(return_value={"commit": {"sha": "default-sha"}})
     gh.set_check_status = AsyncMock()
+    gh.set_commit_status = AsyncMock()
     gh.bot_caller = "hubcast-bot"
     gh.post_comment = AsyncMock()
     gh.react_to_comment = AsyncMock()
@@ -228,7 +230,6 @@ def mock_repligit_ops():
         patch("hubcast.web.github.routes.fetch_pack") as mock_fetch,
         patch("hubcast.web.github.routes.send_pack") as mock_send,
     ):
-        # get_repo_config returns a tuple (config, fetched)
         default_config = Mock(
             dest_org="owner",
             dest_name="repo",
@@ -239,7 +240,7 @@ def mock_repligit_ops():
             check_name="hubcast",
             check_types=["pipeline"],
         )
-        mock_get_config.return_value = (default_config, True)
+        mock_get_config.return_value = default_config
 
         mock_ls.return_value = {"refs/heads/main": "old-sha-456"}
 
@@ -428,21 +429,21 @@ async def test_sync_branch_config_refresh(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "ref,fetched,commit_msg,webhook_expected",
+    "ref,modified,commit_msg,webhook_expected",
     [
-        # config was (re)fetched on a default branch push
-        ("refs/heads/main", True, "update app", True),
-        # cached config, no marker: nothing to do
-        ("refs/heads/main", False, "update app", False),
+        # config file changed on a default branch push
+        ("refs/heads/main", [".github/hubcast.yml"], "update config", True),
+        # config file untouched, no marker: nothing to do
+        ("refs/heads/main", ["src/app.py"], "update app", False),
         # manual trigger via commit message marker
-        ("refs/heads/main", False, "empty commit [hubcast config]", True),
+        ("refs/heads/main", ["src/app.py"], "empty commit [hubcast config]", True),
         # never set webhooks from non-default branches
-        ("refs/heads/feature", True, "update app", False),
+        ("refs/heads/feature", [".github/hubcast.yml"], "update config", False),
     ],
 )
 async def test_sync_branch_webhook_gating(
     ref,
-    fetched,
+    modified,
     commit_msg,
     webhook_expected,
     mock_push_event,
@@ -450,12 +451,13 @@ async def test_sync_branch_webhook_gating(
     mock_gl,
     mock_repligit_ops,
 ):
-    """Webhook should only be set on default branch pushes with a config fetch or marker."""
+    """Webhook should only be set on default branch pushes touching the config file or with a marker."""
 
     mock_push_event.data["ref"] = ref
     mock_push_event.data["head_commit"]["message"] = commit_msg
-    config, _ = mock_repligit_ops["get_repo_config"].return_value
-    mock_repligit_ops["get_repo_config"].return_value = (config, fetched)
+    mock_push_event.data["commits"] = [
+        {"added": [], "modified": modified, "removed": []}
+    ]
 
     await sync_branch(event=mock_push_event, gh=mock_gh, gl=mock_gl, gl_user="gl-user")
 
@@ -469,19 +471,26 @@ async def test_sync_branch_webhook_gating(
 async def test_sync_branch_webhook_permission_denied(
     mock_push_event, mock_gh, mock_gl, mock_repligit_ops
 ):
-    """A non-maintainer pushing config changes should get a failed check explaining the fix."""
+    """A non-maintainer pushing config changes should get a failed commit status explaining the fix."""
 
+    # the push must touch the config file for the webhook update to be attempted
+    mock_push_event.data["commits"] = [
+        {"added": [], "modified": [".github/hubcast.yml"], "removed": []}
+    ]
     mock_gl.set_webhook.side_effect = WebhookPermissionError("not a maintainer")
 
     await sync_branch(event=mock_push_event, gh=mock_gh, gl=mock_gl, gl_user="gl-user")
 
-    mock_gh.set_check_status.assert_awaited_once_with(
+    # reported as a commit status (not a check run) so GitHub does not offer
+    # a "Re-run" button for an error that can't be resolved by re-running
+    mock_gh.set_commit_status.assert_awaited_once_with(
         "sha-123",
         ERROR_CHECK_NAME,
         "failure",
-        title=WEBHOOK_PERMISSION_DENIED_TITLE,
-        summary=WEBHOOK_PERMISSION_DENIED_SUMMARY,
+        description=WEBHOOK_PERMISSION_DENIED_TITLE,
+        target_url=WEBHOOK_PERMISSION_DENIED_DOCS_URL,
     )
+    mock_gh.set_check_status.assert_not_called()
     # the sync should not proceed
     mock_repligit_ops["send_pack"].assert_not_called()
 
@@ -492,17 +501,21 @@ async def test_sync_branch_webhook_internal_error(
 ):
     """A broken hubcast credential should be reported as an internal error."""
 
+    # the push must touch the config file for the webhook update to be attempted
+    mock_push_event.data["commits"] = [
+        {"added": [], "modified": [".github/hubcast.yml"], "removed": []}
+    ]
     mock_gl.set_webhook.side_effect = HubcastError("GitLab rejected hubcast's token")
 
     await sync_branch(event=mock_push_event, gh=mock_gh, gl=mock_gl, gl_user="gl-user")
 
-    mock_gh.set_check_status.assert_awaited_once_with(
+    mock_gh.set_commit_status.assert_awaited_once_with(
         "sha-123",
         ERROR_CHECK_NAME,
         "failure",
-        title=INTERNAL_ERROR_TITLE,
-        summary=INTERNAL_ERROR_SUMMARY,
+        description=INTERNAL_ERROR_TITLE,
     )
+    mock_gh.set_check_status.assert_not_called()
     mock_repligit_ops["send_pack"].assert_not_called()
 
 
@@ -566,14 +579,11 @@ async def test_sync_pr_skip_draft(
     """PR sync should be skipped for draft PRs (when sync_drafts is False)."""
 
     mock_pr_event.data["pull_request"]["draft"] = True
-    mock_repligit_ops["get_repo_config"].return_value = (
-        Mock(
-            sync_drafts=False,
-            dest_org="owner",
-            dest_name="repo",
-            dest_fullname="owner/repo",
-        ),
-        True,
+    mock_repligit_ops["get_repo_config"].return_value = Mock(
+        sync_drafts=False,
+        dest_org="owner",
+        dest_name="repo",
+        dest_fullname="owner/repo",
     )
 
     await sync_pr_event(event=mock_pr_event, gh=mock_gh, gl=mock_gl, gl_user="gl-user")
@@ -588,15 +598,12 @@ async def test_sync_pr_skip_draft_without_message(
     """Draft PR skips should not set a check status when sync_drafts_msg is False."""
 
     mock_pr_event.data["pull_request"]["draft"] = True
-    mock_repligit_ops["get_repo_config"].return_value = (
-        Mock(
-            sync_drafts=False,
-            sync_drafts_msg=False,
-            dest_org="owner",
-            dest_name="repo",
-            dest_fullname="owner/repo",
-        ),
-        True,
+    mock_repligit_ops["get_repo_config"].return_value = Mock(
+        sync_drafts=False,
+        sync_drafts_msg=False,
+        dest_org="owner",
+        dest_name="repo",
+        dest_fullname="owner/repo",
     )
 
     await sync_pr_event(event=mock_pr_event, gh=mock_gh, gl=mock_gl, gl_user="gl-user")
@@ -682,14 +689,11 @@ async def test_sync_pr_creates_mr_when_configured(
     )
 
     # Configure repo to create MRs
-    mock_repligit_ops["get_repo_config"].return_value = (
-        Mock(
-            dest_org="owner",
-            dest_name="repo",
-            dest_fullname="owner/repo",
-            create_mr=True,
-        ),
-        True,
+    mock_repligit_ops["get_repo_config"].return_value = Mock(
+        dest_org="owner",
+        dest_name="repo",
+        dest_fullname="owner/repo",
+        create_mr=True,
     )
 
     mock_repligit_ops["ls_remote"].return_value = {"refs/heads/main": "old-sha"}
@@ -710,14 +714,11 @@ async def test_sync_pr_skips_mr_when_already_exists(
     """Should skip MR creation when MR already exists."""
 
     # Configure repo to create MRs
-    mock_repligit_ops["get_repo_config"].return_value = (
-        Mock(
-            dest_org="owner",
-            dest_name="repo",
-            dest_fullname="owner/repo",
-            create_mr=True,
-        ),
-        True,
+    mock_repligit_ops["get_repo_config"].return_value = Mock(
+        dest_org="owner",
+        dest_name="repo",
+        dest_fullname="owner/repo",
+        create_mr=True,
     )
 
     mock_repligit_ops["ls_remote"].return_value = {"refs/heads/main": "old-sha"}
@@ -763,20 +764,21 @@ sync_cases = pytest.mark.parametrize(
 async def test_sync_config_error_sets_error_check(
     case, request, mock_gh, mock_gl, mock_repligit_ops
 ):
-    """An invalid repo config should be reported as a failed hubcast-error check."""
+    """An invalid repo config should be reported as a failed hubcast-error commit status."""
 
     event = request.getfixturevalue(case.event_fixture)
     mock_repligit_ops["get_repo_config"].side_effect = repo_config_error()
 
     await case.handler(event=event, gh=mock_gh, gl=mock_gl, gl_user="gl-user")
 
-    mock_gh.set_check_status.assert_awaited_once_with(
+    mock_gh.set_commit_status.assert_awaited_once_with(
         case.sha,
         ERROR_CHECK_NAME,
         "failure",
-        title="config title",
-        summary="config summary",
+        description="config title",
+        target_url=CONFIG_DOCS_URL,
     )
+    mock_gh.set_check_status.assert_not_called()
     mock_repligit_ops["send_pack"].assert_not_called()
 
 
@@ -915,14 +917,11 @@ async def test_remove_pr_skip_delete_closed_false(
     """PR branch removal should be skipped when delete_closed=False (PR 280)."""
 
     # Configure repo to NOT delete branches on PR close
-    mock_repligit_ops["get_repo_config"].return_value = (
-        Mock(
-            delete_closed=False,
-            dest_org="owner",
-            dest_name="repo",
-            dest_fullname="owner/repo",
-        ),
-        True,
+    mock_repligit_ops["get_repo_config"].return_value = Mock(
+        delete_closed=False,
+        dest_org="owner",
+        dest_name="repo",
+        dest_fullname="owner/repo",
     )
 
     await remove_pr(
@@ -1521,7 +1520,7 @@ async def test_rerun_check_unrecognized_check_skipped(
 async def test_rerun_check_config_error_sets_error_check(
     mock_check_run_event, mock_gh, mock_gl, mock_repligit_ops
 ):
-    """An invalid repo config should be reported as a failed hubcast-error check."""
+    """An invalid repo config should be reported as a failed hubcast-error commit status."""
 
     mock_repligit_ops["get_repo_config"].side_effect = repo_config_error()
 
@@ -1529,13 +1528,14 @@ async def test_rerun_check_config_error_sets_error_check(
         event=mock_check_run_event, gh=mock_gh, gl=mock_gl, gl_user="gl-user"
     )
 
-    mock_gh.set_check_status.assert_awaited_once_with(
+    mock_gh.set_commit_status.assert_awaited_once_with(
         "check-run-sha-123",
         ERROR_CHECK_NAME,
         "failure",
-        title="config title",
-        summary="config summary",
+        description="config title",
+        target_url=CONFIG_DOCS_URL,
     )
+    mock_gh.set_check_status.assert_not_called()
     mock_gl.retry_pipeline_jobs.assert_not_called()
     mock_gl.retry_job.assert_not_called()
 
