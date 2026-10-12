@@ -1,15 +1,12 @@
 import logging
-from collections.abc import Mapping
-from functools import partial
 from typing import Any
 
 import aiohttp
 from gidgethub import HTTPException, QueryError
-from gidgethub import aiohttp as gh_aiohttp
 
-from hubcast.clients.utils import Response, with_retries
 from hubcast.retry import retry_async
 
+from .api import GitHubAPI
 from .auth import GitHubAuthenticator
 
 log = logging.getLogger(__name__)
@@ -24,16 +21,6 @@ GH_REACTIONS = {
     "rocket": "ROCKET",
     "eyes": "EYES",
 }
-
-
-class GitHubAPI(gh_aiohttp.GitHubAPI):
-    """gidgethub's GitHubAPI with retried requests."""
-
-    async def _request(
-        self, method: str, url: str, headers: Mapping[str, str], body: bytes = b""
-    ) -> Response:
-        send = partial(super()._request, method, url, headers, body)
-        return await with_retries(send, method, url)
 
 
 class GitHubClientFactory:

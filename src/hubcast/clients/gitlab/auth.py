@@ -3,7 +3,7 @@ from datetime import UTC, datetime, timedelta
 
 import aiohttp
 
-import hubcast.clients.gitlab.client as gl_client
+from hubcast.clients.gitlab.api import GitLabAPI
 from hubcast.clients.utils import TokenCache
 
 TOKEN_NAME = "hubcast-impersonation"  # nosec B105
@@ -58,7 +58,7 @@ class GitLabAuthenticator:
             user_id = await self._get_user_id(username)
 
             async with aiohttp.ClientSession() as session:
-                gl = gl_client.GitLabAPI(
+                gl = GitLabAPI(
                     session,
                     self.requester,
                     access_token=self.admin_token,
@@ -89,7 +89,7 @@ class GitLabAuthenticator:
     async def _get_user_id(self, username: str) -> int:
         """Retrieve the user ID for a given username from the GitLab instance."""
         async with aiohttp.ClientSession() as session:
-            gl = gl_client.GitLabAPI(
+            gl = GitLabAPI(
                 session,
                 self.requester,
                 access_token=self.admin_token,
