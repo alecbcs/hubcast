@@ -366,7 +366,9 @@ async def test_sync_branch_with_open_pr(
 
     mock_repligit_ops["send_pack"].assert_awaited_once()
     assert mock_repligit_ops["send_pack"].await_args.args[1:4] == (
-        "refs/heads/feature-branch", "0" * 40, "sha-123"
+        "refs/heads/feature-branch",
+        "0" * 40,
+        "sha-123",
     )
     mock_gh.get_prs.assert_not_called()
 
